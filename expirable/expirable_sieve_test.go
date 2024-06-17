@@ -4,10 +4,10 @@
 package expirable
 
 import (
-	"crypto/rand"
+	// "crypto/rand"
 	"fmt"
-	"math"
-	"math/big"
+	// "math"
+	// "math/big"
 	"reflect"
 	"sync"
 	"testing"
@@ -16,8 +16,8 @@ import (
 	"github.com/akisg/golang-lru/v2/simplelru"
 )
 
-func BenchmarkLRU_Rand_NoExpire(b *testing.B) {
-	l := NewLRU[int64, int64](8192, nil, 0)
+func BenchmarkSieve_Rand_NoExpire(b *testing.B) {
+	l := NewSieve[int64, int64](8192, nil, 0)
 
 	trace := make([]int64, b.N*2)
 	for i := 0; i < b.N*2; i++ {
@@ -41,8 +41,8 @@ func BenchmarkLRU_Rand_NoExpire(b *testing.B) {
 	b.Logf("hit: %d miss: %d ratio: %f", hit, miss, float64(hit)/float64(hit+miss))
 }
 
-func BenchmarkLRU_Freq_NoExpire(b *testing.B) {
-	l := NewLRU[int64, int64](8192, nil, 0)
+func BenchmarkSieve_Freq_NoExpire(b *testing.B) {
+	l := NewSieve[int64, int64](8192, nil, 0)
 
 	trace := make([]int64, b.N*2)
 	for i := 0; i < b.N*2; i++ {
@@ -69,8 +69,8 @@ func BenchmarkLRU_Freq_NoExpire(b *testing.B) {
 	b.Logf("hit: %d miss: %d ratio: %f", hit, miss, float64(hit)/float64(hit+miss))
 }
 
-func BenchmarkLRU_Rand_WithExpire(b *testing.B) {
-	l := NewLRU[int64, int64](8192, nil, time.Millisecond*10)
+func BenchmarkSieve_Rand_WithExpire(b *testing.B) {
+	l := NewSieve[int64, int64](8192, nil, time.Millisecond*10)
 
 	trace := make([]int64, b.N*2)
 	for i := 0; i < b.N*2; i++ {
@@ -94,8 +94,8 @@ func BenchmarkLRU_Rand_WithExpire(b *testing.B) {
 	b.Logf("hit: %d miss: %d ratio: %f", hit, miss, float64(hit)/float64(hit+miss))
 }
 
-func BenchmarkLRU_Freq_WithExpire(b *testing.B) {
-	l := NewLRU[int64, int64](8192, nil, time.Millisecond*10)
+func BenchmarkSieve_Freq_WithExpire(b *testing.B) {
+	l := NewSieve[int64, int64](8192, nil, time.Millisecond*10)
 
 	trace := make([]int64, b.N*2)
 	for i := 0; i < b.N*2; i++ {
@@ -122,17 +122,20 @@ func BenchmarkLRU_Freq_WithExpire(b *testing.B) {
 	b.Logf("hit: %d miss: %d ratio: %f", hit, miss, float64(hit)/float64(hit+miss))
 }
 
-func TestLRUInterface(_ *testing.T) {
+func TestSieveInterface(_ *testing.T) {
 	var _ simplelru.LRUCache[int, int] = &LRU[int, int]{}
 }
 
-func TestLRUNoPurge(t *testing.T) {
-	lc := NewLRU[string, string](10, nil, 0)
+func TestSieveNoPurge(t *testing.T) {
+	lc := NewSieve[string, string](10, nil, 0)
 
 	lc.Add("key1", "val1")
 	if lc.Len() != 1 {
 		t.Fatalf("length differs from expected")
 	}
+	println("After adding key1")
+	println(lc.Keys())
+	println(lc.Values())
 
 	v, ok := lc.Peek("key1")
 	if v != "val1" {
@@ -161,20 +164,24 @@ func TestLRUNoPurge(t *testing.T) {
 		t.Fatalf("value differs from expected")
 	}
 
+	println("Before Purge")
+
 	if lc.Resize(0) != 0 {
 		t.Fatalf("evicted count differs from expected")
 	}
 	if lc.Resize(2) != 0 {
 		t.Fatalf("evicted count differs from expected")
 	}
+	println("After Purge")
 	lc.Add("key2", "val2")
 	if lc.Resize(1) != 1 {
 		t.Fatalf("evicted count differs from expected")
 	}
+	println("After Resize")
 }
 
-func TestLRUEdgeCases(t *testing.T) {
-	lc := NewLRU[string, *string](2, nil, 0)
+func TestSieveEdgeCases(t *testing.T) {
+	lc := NewSieve[string, *string](2, nil, 0)
 
 	// Adding a nil value
 	lc.Add("key1", nil)
@@ -194,8 +201,8 @@ func TestLRUEdgeCases(t *testing.T) {
 	}
 }
 
-func TestLRU_Values(t *testing.T) {
-	lc := NewLRU[string, string](3, nil, 0)
+func TestSieve_Values(t *testing.T) {
+	lc := NewSieve[string, string](3, nil, 0)
 
 	lc.Add("key1", "val1")
 	lc.Add("key2", "val2")
@@ -214,9 +221,9 @@ func TestLRU_Values(t *testing.T) {
 //	lc.Close()
 // }
 
-func TestLRUWithPurge(t *testing.T) {
+func TestSieveWithPurge(t *testing.T) {
 	var evicted []string
-	lc := NewLRU(10, func(key string, value string) { evicted = append(evicted, key, value) }, 150*time.Millisecond)
+	lc := NewSieve(10, func(key string, value string) { evicted = append(evicted, key, value) }, 150*time.Millisecond)
 
 	k, v, ok := lc.GetOldest()
 	if k != "" {
@@ -296,8 +303,8 @@ func TestLRUWithPurge(t *testing.T) {
 	}
 }
 
-func TestLRUWithPurgeEnforcedBySize(t *testing.T) {
-	lc := NewLRU[string, string](10, nil, time.Hour)
+func TestSieveWithPurgeEnforcedBySize(t *testing.T) {
+	lc := NewSieve[string, string](10, nil, time.Hour)
 
 	for i := 0; i < 100; i++ {
 		i := i
@@ -319,8 +326,8 @@ func TestLRUWithPurgeEnforcedBySize(t *testing.T) {
 	}
 }
 
-func TestLRUConcurrency(t *testing.T) {
-	lc := NewLRU[string, string](0, nil, 0)
+func TestSieveConcurrency(t *testing.T) {
+	lc := NewSieve[string, string](0, nil, 0)
 	wg := sync.WaitGroup{}
 	wg.Add(1000)
 	for i := 0; i < 1000; i++ {
@@ -335,9 +342,9 @@ func TestLRUConcurrency(t *testing.T) {
 	}
 }
 
-func TestLRUInvalidateAndEvict(t *testing.T) {
+func TestSieveInvalidateAndEvict(t *testing.T) {
 	var evicted int
-	lc := NewLRU(-1, func(_, _ string) { evicted++ }, 0)
+	lc := NewSieve(-1, func(_, _ string) { evicted++ }, 0)
 
 	lc.Add("key1", "val1")
 	lc.Add("key2", "val2")
@@ -366,8 +373,8 @@ func TestLRUInvalidateAndEvict(t *testing.T) {
 	}
 }
 
-func TestLoadingExpired(t *testing.T) {
-	lc := NewLRU[string, string](0, nil, time.Millisecond*5)
+func TestSieveLoadingExpired(t *testing.T) {
+	lc := NewSieve[string, string](0, nil, time.Millisecond*5)
 
 	lc.Add("key1", "val1")
 	if lc.Len() != 1 {
@@ -422,8 +429,8 @@ func TestLoadingExpired(t *testing.T) {
 	}
 }
 
-func TestLRURemoveOldest(t *testing.T) {
-	lc := NewLRU[string, string](2, nil, 0)
+func TestSieveRemoveOldest(t *testing.T) {
+	lc := NewSieve[string, string](2, nil, 0)
 
 	if lc.Cap() != 2 {
 		t.Fatalf("expect cap is 2")
@@ -492,9 +499,9 @@ func TestLRURemoveOldest(t *testing.T) {
 	}
 }
 
-func ExampleLRU() {
+func ExampleSieve() {
 	// make cache with 10ms TTL and 5 max keys
-	cache := NewLRU[string, string](5, nil, time.Millisecond*10)
+	cache := NewSieve[string, string](5, nil, time.Millisecond*10)
 
 	// set value under key1.
 	cache.Add("key1", "val1")
@@ -524,26 +531,26 @@ func ExampleLRU() {
 	// Cache len: 1
 }
 
-func getRand(tb testing.TB) int64 {
-	out, err := rand.Int(rand.Reader, big.NewInt(math.MaxInt64))
-	if err != nil {
-		tb.Fatal(err)
-	}
-	return out.Int64()
-}
+// func getRand(tb testing.TB) int64 {
+// 	out, err := rand.Int(rand.Reader, big.NewInt(math.MaxInt64))
+// 	if err != nil {
+// 		tb.Fatal(err)
+// 	}
+// 	return out.Int64()
+// }
 
-func (c *LRU[K, V]) wantKeys(t *testing.T, want []K) {
-	t.Helper()
-	got := c.Keys()
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("wrong keys got: %v, want: %v ", got, want)
-	}
-}
+// func (c *LRU[K, V]) wantKeys(t *testing.T, want []K) {
+// 	t.Helper()
+// 	got := c.Keys()
+// 	if !reflect.DeepEqual(got, want) {
+// 		t.Errorf("wrong keys got: %v, want: %v ", got, want)
+// 	}
+// }
 
-func TestCache_EvictionSameKey(t *testing.T) {
+func TestSieveCache_EvictionSameKey(t *testing.T) {
 	var evictedKeys []int
 
-	cache := NewLRU[int, struct{}](
+	cache := NewSieve[int, struct{}](
 		2,
 		func(key int, _ struct{}) {
 			evictedKeys = append(evictedKeys, key)

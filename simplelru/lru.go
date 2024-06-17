@@ -6,13 +6,13 @@ package simplelru
 import (
 	"errors"
 
-	"github.com/hashicorp/golang-lru/v2/internal"
+	"github.com/akisg/golang-lru/v2/internal"
 )
 
 // EvictCallback is used to get a callback when a cache entry is evicted
 type EvictCallback[K comparable, V any] func(key K, value V)
 
-// LRU implements a non-thread safe fixed cache with LRU and SIEVE eviction (https://cachemon.github.io/SIEVE-website/)
+// LRU implements a non-thread safe fixed size cache with LRU and SIEVE eviction (https://cachemon.github.io/SIEVE-website/)
 type LRU[K comparable, V any] struct {
 	size      int
 	evictList *internal.LruList[K, V]

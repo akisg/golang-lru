@@ -7,18 +7,24 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hashicorp/golang-lru/v2/internal"
+	"github.com/akisg/golang-lru/v2/internal"
 )
 
 // EvictCallback is used to get a callback when a cache entry is evicted
 type EvictCallback[K comparable, V any] func(key K, value V)
 
-// LRU implements a thread-safe LRU with expirable entries.
+// LRU implements a thread-safe fixed-size cache with expirable entries.
+// It supports both LRU (Least Recently Used) and SIEVE eviction strategies.
+// For more information on SIEVE eviction, visit: https://cachemon.github.io/SIEVE-website/.
 type LRU[K comparable, V any] struct {
 	size      int
 	evictList *internal.LruList[K, V]
 	items     map[K]*internal.Entry[K, V]
 	onEvict   EvictCallback[K, V]
+
+	// sieve specific
+	hand     *internal.Entry[K, V]
+	useSieve bool
 
 	// expirable options
 	mu   sync.Mutex
@@ -95,6 +101,55 @@ func NewLRU[K comparable, V any](size int, onEvict EvictCallback[K, V], ttl time
 	return &res
 }
 
+// NewSieve returns a new thread-safe cache with expirable entries using SIEVE eviction strategy.
+// NewSieve constructs a SIEVE of the given size
+func NewSieve[K comparable, V any](size int, onEvict EvictCallback[K, V], ttl time.Duration) *LRU[K, V] {
+	if size < 0 {
+		size = 0
+	}
+	if ttl <= 0 {
+		ttl = noEvictionTTL
+	}
+
+	res := LRU[K, V]{
+		ttl:       ttl,
+		size:      size,
+		evictList: internal.NewList[K, V](),
+		items:     make(map[K]*internal.Entry[K, V]),
+		onEvict:   onEvict,
+		done:      make(chan struct{}),
+		// sieve specific
+		hand:     nil,
+		useSieve: true,
+	}
+
+	// initialize the buckets
+	res.buckets = make([]bucket[K, V], numBuckets)
+	for i := 0; i < numBuckets; i++ {
+		res.buckets[i] = bucket[K, V]{entries: make(map[K]*internal.Entry[K, V])}
+	}
+
+	// enable deleteExpired() running in separate goroutine for cache with non-zero TTL
+	//
+	// Important: done channel is never closed, so deleteExpired() goroutine will never exit,
+	// it's decided to add functionality to close it in the version later than v2.
+	if res.ttl != noEvictionTTL {
+		go func(done <-chan struct{}) {
+			ticker := time.NewTicker(res.ttl / numBuckets)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-ticker.C:
+					res.deleteExpired()
+				}
+			}
+		}(res.done)
+	}
+	return &res
+}
+
 // Purge clears the cache completely.
 // onEvict is called for each evicted key.
 func (c *LRU[K, V]) Purge() {
@@ -124,12 +179,29 @@ func (c *LRU[K, V]) Add(key K, value V) (evicted bool) {
 
 	// Check for existing item
 	if ent, ok := c.items[key]; ok {
-		c.evictList.MoveToFront(ent)
+		if c.useSieve {
+			ent.Visited = true
+		} else {
+			c.evictList.MoveToFront(ent)
+		}
 		c.removeFromBucket(ent) // remove the entry from its current bucket as expiresAt is renewed
 		ent.Value = value
 		ent.ExpiresAt = now.Add(c.ttl)
 		c.addToBucket(ent)
 		return false
+	}
+
+	if c.useSieve {
+		if c.evictList.Length() >= c.size {
+			c.performSieveEviction()
+			evicted = true
+		}
+
+		ent := c.evictList.PushFrontExpirable(key, value, now.Add(c.ttl))
+		ent.Visited = false
+		c.items[key] = ent
+		c.addToBucket(ent)
+		return
 	}
 
 	// Add new item
@@ -155,7 +227,11 @@ func (c *LRU[K, V]) Get(key K) (value V, ok bool) {
 		if time.Now().After(ent.ExpiresAt) {
 			return value, false
 		}
-		c.evictList.MoveToFront(ent)
+		if c.useSieve {
+			ent.Visited = true
+		} else {
+			c.evictList.MoveToFront(ent)
+		}
 		return ent.Value, true
 	}
 	return
@@ -186,6 +262,17 @@ func (c *LRU[K, V]) Peek(key K) (value V, ok bool) {
 	return
 }
 
+// visited returns if the key is visited
+func (c *LRU[K, V]) visited(key K) (present bool, visited bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var ent *internal.Entry[K, V]
+	if ent, present = c.items[key]; present {
+		visited = ent.Visited
+	}
+	return
+}
+
 // Remove removes the provided key from the cache, returning if the
 // key was contained.
 func (c *LRU[K, V]) Remove(key K) bool {
@@ -202,6 +289,9 @@ func (c *LRU[K, V]) Remove(key K) bool {
 func (c *LRU[K, V]) RemoveOldest() (key K, value V, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.useSieve {
+		return c.performSieveEviction()
+	}
 	if ent := c.evictList.Back(); ent != nil {
 		c.removeElement(ent)
 		return ent.Key, ent.Value, true
@@ -213,6 +303,14 @@ func (c *LRU[K, V]) RemoveOldest() (key K, value V, ok bool) {
 func (c *LRU[K, V]) GetOldest() (key K, value V, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.useSieve {
+		c.getSieveCandidate()
+		if c.hand != nil {
+			return c.hand.Key, c.hand.Value, true
+		}
+
+		return
+	}
 	if ent := c.evictList.Back(); ent != nil {
 		return ent.Key, ent.Value, true
 	}
@@ -271,7 +369,11 @@ func (c *LRU[K, V]) Resize(size int) (evicted int) {
 		diff = 0
 	}
 	for i := 0; i < diff; i++ {
-		c.removeOldest()
+		if c.useSieve {
+			c.performSieveEviction()
+		} else {
+			c.removeOldest()
+		}
 	}
 	c.size = size
 	return diff
@@ -289,8 +391,44 @@ func (c *LRU[K, V]) Resize(size int) (evicted int) {
 //	close(c.done)
 // }
 
+// performSieveEviction - runs a eviction by running Sieve Algorithm and returns the evicted value.
+func (c *LRU[K, V]) performSieveEviction() (key K, value V, ok bool) {
+	c.getSieveCandidate()
+	if c.hand != nil {
+		candidate := c.hand
+		c.hand = c.hand.PrevEntry()
+		c.removeElement(candidate)
+		return candidate.Key, candidate.Value, true
+	}
+
+	return
+}
+
+// getSieveCandidate evicts an entry based on sieve algorithm.
+func (c *LRU[K, V]) getSieveCandidate() {
+	if c.Len() == 0 {
+		return
+	}
+
+	if c.hand == nil {
+		c.hand = c.evictList.Back()
+	}
+
+	for c.hand != nil && c.hand.Visited {
+		c.hand.Visited = false
+		c.hand = c.hand.PrevEntry()
+		if c.hand == nil {
+			c.hand = c.evictList.Back()
+		}
+	}
+}
+
 // removeOldest removes the oldest item from the cache. Has to be called with lock!
 func (c *LRU[K, V]) removeOldest() {
+	if c.useSieve {
+		c.performSieveEviction()
+		return
+	}
 	if ent := c.evictList.Back(); ent != nil {
 		c.removeElement(ent)
 	}
